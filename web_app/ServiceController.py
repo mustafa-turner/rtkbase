@@ -1,4 +1,5 @@
 import os
+import time
 from pystemd.systemd1 import Unit
 from pystemd.systemd1 import Manager
 
@@ -23,6 +24,19 @@ class ServiceController(object):
             return True
         else:
             return False
+
+    def active_state(self):
+        """Return systemd's current ActiveState as text."""
+        return self.unit.Unit.ActiveState.decode()
+
+    def wait_for_inactive(self, timeout=10.0, interval=0.1):
+        """Wait for a stop job to finish, rather than only being queued."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.active_state() in ("inactive", "failed"):
+                return True
+            time.sleep(interval)
+        return self.active_state() in ("inactive", "failed")
     
     def get_nrestart(self):
         """

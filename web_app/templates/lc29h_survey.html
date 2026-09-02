@@ -1,0 +1,124 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container py-3">
+  <div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
+    <h3 class="mb-1">LC29H-BS Base Survey</h3>
+    <span id="survey-state-badge" class="badge badge-secondary px-3 py-2">IDLE</span>
+  </div>
+
+  <div id="configuration-alert" class="alert alert-warning" {% if receiver_info.supported_receiver and not receiver_info.configuration_error %}hidden{% endif %}>
+    {% if receiver_info.configuration_error %}
+      {{ receiver_info.configuration_error }}
+    {% elif not receiver_info.supported_receiver %}
+      Base Survey requires an LC29H-BS receiver. The configured receiver is <strong>{{ receiver_info.receiver }}</strong>.
+    {% endif %}
+  </div>
+  <div id="operation-alert" class="alert" role="alert" hidden></div>
+
+  <div class="row">
+    <div class="col-lg-6 mb-3">
+      <div class="card h-100">
+        <div class="card-header font-weight-bold">Receiver</div>
+        <div class="card-body">
+          <dl class="row mb-0">
+            <dt class="col-5">Receiver</dt><dd id="receiver-name" class="col-7">{{ receiver_info.receiver_name }}</dd>
+            <dt class="col-5">Port</dt><dd id="receiver-port" class="col-7"><code>{{ receiver_info.port }}</code></dd>
+            <dt class="col-5">Baud</dt><dd id="receiver-baud" class="col-7">{{ receiver_info.baud or 'Invalid' }}</dd>
+            <dt class="col-5">Main Service</dt><dd id="main-service" class="col-7">Checking...</dd>
+            <dt class="col-5">Survey State</dt><dd id="survey-state" class="col-7 mb-0">Idle</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-6 mb-3">
+      <div class="card h-100">
+        <div class="card-header font-weight-bold">Survey Settings</div>
+        <div class="card-body">
+          <div class="form-group row">
+            <label for="minimum-duration" class="col-sm-6 col-form-label">Minimum duration</label>
+            <div class="col-sm-6">
+              <div class="input-group">
+                <input id="minimum-duration" class="form-control" type="number" min="1" step="1" value="600" required>
+                <div class="input-group-append"><span class="input-group-text">seconds</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="form-group row">
+            <label for="accuracy-limit" class="col-sm-6 col-form-label">Accuracy limit</label>
+            <div class="col-sm-6">
+              <div class="input-group">
+                <input id="accuracy-limit" class="form-control" type="number" min="0.001" step="0.1" value="15.0" required>
+                <div class="input-group-append"><span class="input-group-text">m</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="d-flex justify-content-end">
+            <button id="stop-survey" type="button" class="btn btn-outline-danger mr-2" disabled>Cancel Survey</button>
+            <button id="start-survey" type="button" class="btn btn-primary" {% if not receiver_info.supported_receiver or receiver_info.configuration_error %}disabled{% endif %}>Start Survey</button>
+          </div>
+          <small class="form-text text-muted mt-3">Keep the antenna completely stationary for the whole survey.</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header font-weight-bold">Survey Status</div>
+    <div class="card-body">
+      <dl class="row mb-0">
+        <dt class="col-sm-4">State</dt><dd id="status-state" class="col-sm-8">IDLE</dd>
+        <dt class="col-sm-4">Elapsed</dt><dd id="status-elapsed" class="col-sm-8">00:00</dd>
+        <dt class="col-sm-4">Remaining minimum time</dt><dd id="status-remaining" class="col-sm-8">--</dd>
+        <dt class="col-sm-4">Observations</dt><dd id="status-observations" class="col-sm-8">--</dd>
+        <dt class="col-sm-4">Mean Accuracy</dt><dd id="status-accuracy" class="col-sm-8 mb-0">--</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col-lg-6 mb-3">
+      <div class="card h-100">
+        <div class="card-header font-weight-bold">ECEF (metres)</div>
+        <div class="card-body">
+          <dl class="row mb-0">
+            <dt class="col-2">X</dt><dd id="ecef-x" class="col-10 text-monospace">--</dd>
+            <dt class="col-2">Y</dt><dd id="ecef-y" class="col-10 text-monospace">--</dd>
+            <dt class="col-2">Z</dt><dd id="ecef-z" class="col-10 text-monospace mb-0">--</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-6 mb-3">
+      <div class="card h-100">
+        <div class="card-header font-weight-bold">Calculated RTKBase Position</div>
+        <div class="card-body">
+          <dl class="row">
+            <dt class="col-5">Latitude</dt><dd id="latitude" class="col-7 text-monospace">--</dd>
+            <dt class="col-5">Longitude</dt><dd id="longitude" class="col-7 text-monospace">--</dd>
+            <dt class="col-5">Ellipsoid Height</dt><dd id="ellipsoid-height" class="col-7 text-monospace">--</dd>
+          </dl>
+          <label for="rtkbase-position" class="font-weight-bold">RTKBase format</label>
+          <input id="rtkbase-position" class="form-control text-monospace mb-2" type="text" value="" placeholder="latitude longitude ellipsoid_height" readonly>
+          <button id="copy-position" type="button" class="btn btn-outline-primary float-right" disabled>Copy RTKBase Position</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header font-weight-bold">Receiver Position</div>
+    <div class="card-body">
+      <p class="text-muted">After survey completion, send the final surveyed ECEF XYZ directly to the receiver as its fixed base position.</p>
+      <button id="set-fixed" type="button" class="btn btn-success" disabled>Set Receiver to Surveyed Position</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script type="text/javascript" src="{{ url_for('static', filename='lc29h_survey.js') }}"></script>
+{% endblock %}

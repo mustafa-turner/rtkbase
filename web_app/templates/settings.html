@@ -67,7 +67,7 @@
 
         <label for="receiver" class="col-sm-3 col-form-label">Receiver type: </label>
         <div class="col-sm-9">
-            <input id="receiver" type="text" name="receiver" class="form-control" aria-describedby="receiverHelp" placeholder="Receiver brand & model" value="{{ main_settings[3].receiver }}" title="Gnss receiver Brand and model" pattern="\w[^\|><\/\s]*" required >
+            <input id="receiver" type="text" name="receiver" class="form-control" aria-describedby="receiverHelp" placeholder="Receiver brand & model" value="{{ main_settings[3].receiver }}" title="Gnss receiver Brand and model" pattern="[^\|><\/]+" required >
             <small class="form-text text-muted" id="receiverHelp">Gnss receiver brand and model</small>
 
         </div>

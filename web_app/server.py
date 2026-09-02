@@ -54,7 +54,7 @@ import network_infos
 #import reach_bluetooth.tcp_bridge
 
 from flask_bootstrap import Bootstrap4
-from flask import Flask, render_template, session, request, flash, url_for
+from flask import Flask, render_template, session, request, flash, url_for, jsonify
 from flask import send_from_directory, redirect, abort
 from flask import g
 from flask_wtf import FlaskForm
@@ -85,6 +85,12 @@ app.config['UPLOAD_EXTENSIONS'] = ['.conf', '.txt', 'ini']
 rtkbase_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
 path_to_rtklib = "/usr/local/bin" #TODO find path with which or another tool
 
+# Share the protocol implementation with tools/lc29h-bs_survey.py.
+sys.path.insert(0, os.path.join(rtkbase_path, "tools"))
+from lc29h_survey import (LC29HError, LC29HSurveyManager,
+                          SurveyConflictError, SurveyStateError,
+                          SurveyValidationError, is_lc29h_receiver)
+
 login=LoginManager(app)
 login.login_view = 'login_page'
 socketio = SocketIO(app, async_mode = 'gevent')
@@ -111,6 +117,11 @@ services_list = [{"service_unit" : "str2str_tcp.service", "name" : "main"},
                  {'service_unit' : 'rtkbase_gnss_web_proxy.service', "name": "RTKBase Reverse Proxy for Gnss receiver Web Server"},
                  {'service_unit' : 'configure_gps.service', "name" : "configure_gps"},
                  ]
+
+lc29h_survey = LC29HSurveyManager(
+    before_serial=lambda port: stop_main_service_for_survey(port),
+    main_service_running=lambda: main_service_is_running(),
+)
 
 #Delay before rtkrcv will stop if no user is on status.html page
 rtkcv_standby_delay = 600
@@ -463,6 +474,105 @@ def settings_page():
                                             file_settings = file_settings,
                                             os_infos = distro.info(),)
 
+def get_lc29h_receiver_configuration():
+    """Read the receiver connection from RTKBase's existing main settings."""
+    receiver = rtkbaseconfig.get("main", "receiver").strip("'")
+    configured_port = rtkbaseconfig.get("main", "com_port").strip("'")
+    port = configured_port if configured_port.startswith("/dev/") else \
+        "/dev/{}".format(configured_port.lstrip("/"))
+    serial_settings = rtkbaseconfig.get(
+        "main", "com_port_settings").strip("'")
+    baud_text = serial_settings.split(":", 1)[0]
+    try:
+        baud = int(baud_text)
+        if baud <= 0:
+            raise ValueError
+        configuration_error = None
+    except (TypeError, ValueError):
+        baud = None
+        configuration_error = (
+            "The configured baud rate {!r} is invalid.".format(baud_text))
+    if not configured_port:
+        configuration_error = "No GNSS serial port is configured."
+    return {
+        "receiver": receiver,
+        "receiver_name": "Quectel LC29H-BS",
+        "supported_receiver": is_lc29h_receiver(receiver),
+        "port": port,
+        "baud": baud,
+        "configuration_error": configuration_error,
+    }
+
+def get_lc29h_survey_status():
+    status = lc29h_survey.get_status()
+    operation_port = status.get("port")
+    operation_baud = status.get("baud")
+    status.update(get_lc29h_receiver_configuration())
+    # During a running/completed operation, report the connection it actually
+    # owns rather than a setting changed in another browser tab.
+    if operation_port:
+        status["port"] = operation_port
+        status["baud"] = operation_baud
+    return status
+
+@app.route('/lc29h-survey')
+@login_required
+def lc29h_survey_page():
+    """LC29H-BS survey-in control and live status page."""
+    return render_template(
+        "lc29h_survey.html",
+        receiver_info=get_lc29h_receiver_configuration())
+
+@app.route('/api/v1/lc29h/survey/status', methods=['GET'])
+@login_required
+def lc29h_survey_status_api():
+    return jsonify(get_lc29h_survey_status())
+
+@app.route('/api/v1/lc29h/survey/start', methods=['POST'])
+@login_required
+def lc29h_survey_start_api():
+    receiver_configuration = get_lc29h_receiver_configuration()
+    if receiver_configuration["configuration_error"]:
+        return jsonify({
+            "error": receiver_configuration["configuration_error"]}), 400
+    if not receiver_configuration["supported_receiver"]:
+        return jsonify({
+            "error": "Survey-in is only available when the configured receiver is an LC29H-BS."}), 400
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "The request body must be a JSON object."}), 400
+    try:
+        status = lc29h_survey.start(
+            receiver_configuration["port"], receiver_configuration["baud"],
+            data.get("minimum_duration", 600),
+            data.get("accuracy_limit", 15.0))
+    except (TypeError, ValueError, SurveyValidationError) as error:
+        return jsonify({"error": str(error)}), 400
+    except SurveyConflictError as error:
+        return jsonify({"error": str(error)}), 409
+    except LC29HError as error:
+        return jsonify({"error": str(error)}), 500
+    return jsonify(status), 202
+
+@app.route('/api/v1/lc29h/survey/stop', methods=['POST'])
+@login_required
+def lc29h_survey_stop_api():
+    try:
+        return jsonify(lc29h_survey.stop()), 202
+    except SurveyStateError as error:
+        return jsonify({"error": str(error)}), 409
+
+@app.route('/api/v1/lc29h/survey/fixed', methods=['POST'])
+@login_required
+def lc29h_survey_fixed_api():
+    try:
+        return jsonify(lc29h_survey.set_fixed())
+    except SurveyStateError as error:
+        return jsonify({"error": str(error)}), 409
+    except LC29HError as error:
+        return jsonify({"error": str(error),
+                        "status": lc29h_survey.get_status()}), 502
+
 @app.route('/logs')
 @login_required
 def logs_page():
@@ -810,6 +920,46 @@ def turnOffWiFi():
 
 #### Systemd Services functions ####
 
+def get_main_service():
+    return next(service for service in services_list
+                if service["name"] == "main")
+
+def main_service_is_running():
+    main_service = get_main_service()
+    if "unit" not in main_service:
+        return bool(main_service.get("active", False))
+    return main_service["unit"].isActive()
+
+def stop_main_service_for_survey(port):
+    """Synchronously release str2str's receiver ownership for LC29H work."""
+    main_service = get_main_service()
+    if "unit" not in main_service:
+        raise LC29HError("The str2str_tcp service controller is unavailable.")
+    if main_service["unit"].isActive():
+        # rtkrcv consumes the main service's TCP stream.  Stop it first so its
+        # state does not lag behind the serial service that is being stopped.
+        rtk.stopBase()
+        main_service["unit"].stop()
+    if not main_service["unit"].wait_for_inactive(timeout=10.0):
+        raise LC29HError(
+            "str2str_tcp.service did not stop; the receiver was not opened.")
+    main_service["active"] = False
+    time.sleep(0.25)
+    if main_service["unit"].active_state() not in ("inactive", "failed"):
+        raise LC29HError(
+            "str2str_tcp.service restarted before the receiver could be opened.")
+    try:
+        port_users = subprocess.run(
+            ["fuser", port], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, check=False)
+    except FileNotFoundError:
+        port_users = None
+    if port_users is not None and port_users.returncode == 0:
+        users = (port_users.stdout + " " + port_users.stderr).strip()
+        raise LC29HError(
+            "Serial device {} is still in use{}; it was not opened.".format(
+                port, " by " + users if users else ""))
+
 def load_units(services):
     """
         load unit service before getting status
@@ -917,6 +1067,16 @@ def switchService(json_msg):
     """
     #print("Received service to switch", json_msg)
     try:
+        if (json_msg.get("name") == "main" and
+                json_msg.get("active") is True and
+                lc29h_survey.is_serial_busy()):
+            socketio.emit(
+                "service switch rejected",
+                json.dumps({"name": "main", "error":
+                            "Main service cannot start while LC29H survey control owns the serial port."}),
+                namespace="/test")
+            getServicesStatus()
+            return
         for service in services_list:
             if json_msg["name"] == service["name"] and json_msg["active"] == True:
                 print("Trying to start service {}".format(service["name"]))

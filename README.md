@@ -43,7 +43,7 @@ If you use a Raspberry Pi, thanks to [jancelin](https://github.com/jancelin), yo
   sudo ./install.sh --all release
   ```
 
-+ Go grab a coffee, it's gonna take a while. The script will install the needed software, and if you use a supported receiver (U-Blox ZED-F9P, Septentrio Mosaic-X5, Unicore UM980/UM982), it'll be detected and set to work as a base station. If you don't use a supported recevier, you will have to configure your receiver manually (see step 7 in manual installation), and choose the correct port from the settings page.
++ Go grab a coffee, it's gonna take a while. The script will install the needed software, and if you use a supported receiver (U-Blox ZED-F9P, Septentrio Mosaic-X5, Unicore UM980/UM982, Quectel LC29H-BS), it'll be detected and set to work as a base station. If you don't use a supported recevier, you will have to configure your receiver manually (see step 7 in manual installation), and choose the correct port from the settings page.
 
 + Open a web browser to `http://ip_of_your_sbc` (the script will try to show you this ip address). Default password is `admin`. The settings page allows you to enter your own settings for the base coordinates, ntrip credentials and so on...
 
@@ -54,16 +54,62 @@ If you use a Raspberry Pi, thanks to [jancelin](https://github.com/jancelin), yo
    - [rtklibexplorer - PPP - for dual frequency receivers](https://rtklibexplorer.wordpress.com/2017/11/23/ppp-solutions-with-the-swiftnav-piksi-multi/)
    - [Centipede documentation (in french)](https://docs.centipede.fr/docs/base/positionnement.html)
 
-   For Quectel LC29HBS receivers, open a shell, and run the following to survey-in the device (averaging samples across 1 day), and display the base station coordinates:
-   ```bash
-   python3 tools/lc29h-bs_survey.py --mode survey --min-dur 86400 --speed 921600 /dev/ttyS0
-   ```
+   Quectel LC29H-BS receivers can be surveyed without a shell. See [LC29H-BS Base Survey](#lc29h-bs-base-survey).
 
 + To help you find your base ip address, you can use the simple `find_rtkase` gui tool. It is available for Gnu/Linux and Windows in [./tools/find_rtkbase/dist](./tools/find_rtkbase/dist/).
 
    - Click on the "Find" button, wait, then click on the "Open" button. It will open the RTKBase GUI in your web browser.
 
      <img src="./tools/find_rtkbase/find_rtkbase_screenshot.png" alt="screenshot of find_rtkbase tool" width="300" />
+
+## LC29H-BS Base Survey
+
+When `Quectel_LC29HBS` is selected as the receiver, open **Base Survey** in the RTKBase navigation. The page uses the serial port and baud rate already configured under **Settings > Main service**; it does not assume a particular `/dev/tty*` device.
+
+**Minimum duration** is the shortest time for which the receiver will collect observations. **Accuracy limit** is the receiver's estimated mean-position threshold. Both receiver conditions influence completion, so a survey may take longer than the minimum duration. Keep the antenna, mount and cable physically stationary throughout the survey.
+
+Starting a survey stops `str2str_tcp.service` and verifies that it is inactive before the web process opens the receiver. Live observation count, estimated accuracy and mean ECEF XYZ are shown about once per second. ECEF is the receiver's Earth-centred Cartesian result; RTKBase Settings instead expects latitude, longitude and height. The displayed conversion uses WGS84 longitude/latitude and **WGS84 ellipsoidal height**. Do not replace it with orthometric, geoid or mean-sea-level height.
+
+After the receiver reports survey completion:
+
+1. Select **Set Receiver to Surveyed Position**. RTKBase sends the final surveyed ECEF XYZ in the LC29H-BS fixed-mode command and reports success only after an acknowledgement.
+2. Select **Copy RTKBase Position**.
+3. Open **Settings**, paste the plain `latitude longitude ellipsoid_height` value into **Base coordinates**, and save it.
+4. Start the Main and required NTRIP/output services normally. V1 deliberately does not change `settings.conf`, caster settings, or service startup automatically.
+
+This receiver survey is useful for a temporary field base, not for establishing geodetic control. A short standalone survey such as 600 seconds must not be treated as centimetre-accurate absolute positioning. RTK can still produce centimetre-level *relative* base-to-rover precision, but an absolute error in the base coordinate shifts rover coordinates by approximately the same amount.
+
+The command-line tool remains available and shares the same parser, checksum, WGS84 conversion, and fixed-mode implementation:
+
+```bash
+python3 tools/lc29h-bs_survey.py --mode survey --min-dur 600 --acc-limit 15.0 --speed 921600 /dev/ttyGNSS
+```
+
+### LC29H-BS hardware test checklist
+
+1. Boot RTKBase.
+2. Verify the LC29H-BS is detected.
+3. Open **Base Survey**.
+4. Confirm the displayed serial port and baud rate.
+5. Start a short test survey.
+6. Confirm the Main/`str2str_tcp` service stops.
+7. Confirm live status updates.
+8. Confirm observations increase.
+9. Confirm mean accuracy updates.
+10. Confirm ECEF values change during the survey.
+11. Confirm geodetic coordinates update.
+12. Wait until the receiver reports `valid_flag == 2`.
+13. Confirm the page reports **COMPLETE**.
+14. Select **Set Receiver to Surveyed Position**.
+15. Confirm the receiver acknowledges fixed mode.
+16. Select **Copy RTKBase Position**.
+17. Paste the value into the normal RTKBase Settings page and save it.
+18. Start the Main service.
+19. Verify RTCM output.
+20. Verify NTRIP output.
+21. Verify a rover receives corrections.
+22. Reboot the Pi.
+23. Verify the LC29H startup configuration still runs before `str2str_tcp.service`.
 
 ## Manual installation: 
 The `install.sh` script can be used without the `--all` option to split the installation process into several different steps:

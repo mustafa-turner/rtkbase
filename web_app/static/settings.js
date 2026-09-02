@@ -346,7 +346,8 @@ $(document).ready(function () {
         console.log(response);
         detectApplyBtnElt.setAttribute('data-dismiss', 'modal');
         if (response['result'] === 'success') {
-            detectBodyElt.innerHTML = '<b>' + response['gnss_type'] + '</b>' + ' detected on ' + '<b>' + response['port'] + '</b>' + '<br>' + '<br>' + 'Do you want to apply?';
+            const receiverName = response['gnss_type'] === 'Quectel_LC29HBS' ? 'Quectel LC29H-BS' : response['gnss_type'];
+            detectBodyElt.innerHTML = '<b>' + receiverName + '</b>' + ' detected on ' + '<b>' + response['port'] + '</b>' + '<br>' + '<br>' + 'Do you want to apply?';
             detectApplyBtnElt.onclick = function (){
                 socket.emit("apply_receiver_settings", response)
             };
@@ -366,6 +367,11 @@ $(document).ready(function () {
             // refreshing the page to display the new informations
             location.href = document.URL.replace(/#$/, '');
         }
+    })
+
+    socket.on("service switch rejected", function(msg) {
+        response = JSON.parse(msg);
+        window.alert(response.error);
     })
 
     // ############### HANDLE CONFIGURE GNSS ################

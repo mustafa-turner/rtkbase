@@ -438,10 +438,12 @@ detect_gnss() {
                 fi
 
                 # Detect Quectel LC29H-BS receivers using nmea.py
-                if [[ $(python3 "${rtkbase_path}"/tools/nmea.py --file "${rtkbase_path}"/receiver_cfg/LC29HBS_Version.txt /dev/$port $port_speed 3 2>/dev/null) =~ 'LC29HBS' ]]; then
+                lc29h_version=$(python3 "${rtkbase_path}"/tools/nmea.py --file "${rtkbase_path}"/receiver_cfg/LC29HBS_Version.txt /dev/$port $port_speed 3 2>/dev/null)
+                if [[ "${lc29h_version}" =~ 'LC29HBS' ]]; then
                     detected_gnss[0]=$port
-                    detected_gnss[1]='LC29H-BS'
+                    detected_gnss[1]='Quectel_LC29HBS'
                     detected_gnss[2]=$port_speed
+                    detected_gnss[3]=$(echo "${lc29h_version}" | cut -d , -f 2)
                     #echo 'Quectel LC29H-BS DETECTED ON ' $port ' at ' $port_speed
                     break
                 elif { model=$(python3 "${rtkbase_path}"/tools/unicore_tool.py --port /dev/$port --baudrate $port_speed --command get_model 2>/dev/null) ; [[ "${model}" == 'UM98'[0-2] ]] ;}; then
@@ -454,7 +456,7 @@ detect_gnss() {
                 sleep 0.1
             done
             #exit loop if a receiver is detected
-            [[ ${#detected_gnss[*]} -eq 3 ]] && break
+            [[ ${#detected_gnss[*]} -ge 3 ]] && break
         done
       fi
       # Test if speed is in detected_gnss array. If not, add the default value.
@@ -621,7 +623,7 @@ configure_gnss(){
           fi
           sudo -u "${RTKBASE_USER}" sed -i s/^receiver_firmware=.*/receiver_firmware=\'${firmware}\'/ "${rtkbase_path}"/settings.conf && \
           sudo -u "${RTKBASE_USER}" sed -i s/^com_port_settings=.*/com_port_settings=\'921600:8:n:1\'/ "${rtkbase_path}"/settings.conf && \
-          sudo -u "${RTKBASE_USER}" sed -i s/^receiver=.*/receiver=\'Quectel LC29HBS\'/ "${rtkbase_path}"/settings.conf && \
+          sudo -u "${RTKBASE_USER}" sed -i s/^receiver=.*/receiver=\'Quectel_LC29HBS\'/ "${rtkbase_path}"/settings.conf && \
           sudo -u "${RTKBASE_USER}" sed -i s/^receiver_format=.*/receiver_format=\'rtcm3\'/ "${rtkbase_path}"/settings.conf
           return $?
         else

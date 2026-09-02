@@ -33,6 +33,7 @@ def send_nmea_command(port, speed, timeout, nmea_command, verbose):
                 print(f"Sent command: {nmea_command_with_checksum}")
 
             # Wait for the response
+            command_name = nmea_command.split(',', 1)[0]
             start_time = time.time()
             while time.time() - start_time < timeout:
                 try:
@@ -41,6 +42,11 @@ def send_nmea_command(port, speed, timeout, nmea_command, verbose):
                     if response and response.startswith('$'):
                         if verbose:
                             print(f"Received response: {response}")
+                        # LC29H detection runs while regular NMEA messages may
+                        # already be streaming. Do not mistake one for the
+                        # requested version response.
+                        if command_name == '$PQTMVERNO' and not response.startswith('$PQTMVERNO'):
+                            continue
                         return response
                 except UnicodeDecodeError as e:
                     # Skip non-ASCII responses (likely RTCM3 messages)
@@ -104,4 +110,8 @@ if __name__ == "__main__":
         if command.startswith('#SLEEP#'):
             handle_sleep_command(command, args.verbose)
         else:
-            send_nmea_command(args.port, args.speed, args.timeout, command, args.verbose)
+            response = send_nmea_command(args.port, args.speed, args.timeout, command, args.verbose)
+            # Detection/configuration scripts consume command responses from
+            # stdout. Non-verbose mode previously discarded the response.
+            if response and not args.verbose:
+                print(response)
