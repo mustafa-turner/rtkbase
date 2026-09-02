@@ -3,6 +3,7 @@
 
 import copy
 import math
+import re
 import threading
 import time
 
@@ -15,6 +16,8 @@ except ImportError:  # Protocol/conversion tests do not need pyserial installed.
 LC29H_RECEIVER_ID = "Quectel_LC29HBS"
 LC29H_RECEIVER_NAME = "Quectel LC29H-BS"
 ACTIVE_STATES = ("starting", "surveying", "setting_fixed")
+NMEA_SENTENCE_PATTERN = re.compile(
+    r"\$[A-Z][A-Z0-9]*(?:,[^$*\r\n]*)?\*[0-9A-Fa-f]{2}")
 
 
 class LC29HError(Exception):
@@ -56,6 +59,15 @@ def validate_nmea_checksum(sentence):
         return False
     body, supplied = sentence.rsplit("*", 1)
     return calculate_nmea_checksum(body).rsplit("*", 1)[1] == supplied[:2].upper()
+
+
+def extract_nmea_sentences(chunk):
+    """Extract complete NMEA sentences from mixed RTCM and ASCII data."""
+    if isinstance(chunk, bytes):
+        chunk = chunk.decode("ascii", errors="ignore")
+    if not isinstance(chunk, str):
+        return []
+    return NMEA_SENTENCE_PATTERN.findall(chunk)
 
 
 def parse_survey_status(sentence):
@@ -189,18 +201,19 @@ def _write_command(serial_port, command):
 def _read_command_ack(serial_port, command_name, timeout, clock=time.monotonic):
     deadline = clock() + timeout
     while clock() < deadline:
-        response = serial_port.readline().decode("ascii", errors="ignore").strip()
-        if not response or not response.startswith("$" + command_name + ","):
-            continue
-        if "*" in response and not validate_nmea_checksum(response):
-            raise LC29HError(
-                "Receiver returned an acknowledgement with an invalid checksum.")
-        fields = response.split("*", 1)[0].split(",")
-        if any(field.upper() == "OK" for field in fields[1:]):
-            return response
-        if any(field.upper() in ("ERROR", "FAIL", "FAILED") for field in fields[1:]):
-            raise LC29HError("Receiver rejected {} command: {}".format(
-                command_name, response))
+        for response in extract_nmea_sentences(serial_port.readline()):
+            if not response.startswith("$" + command_name + ","):
+                continue
+            if not validate_nmea_checksum(response):
+                raise LC29HError(
+                    "Receiver returned an acknowledgement with an invalid checksum.")
+            fields = response.split("*", 1)[0].split(",")
+            if any(field.upper() == "OK" for field in fields[1:]):
+                return response
+            if any(field.upper() in ("ERROR", "FAIL", "FAILED")
+                   for field in fields[1:]):
+                raise LC29HError("Receiver rejected {} command: {}".format(
+                    command_name, response))
     raise LC29HError("Timed out waiting for receiver acknowledgement to {}.".format(
         command_name))
 
@@ -387,17 +400,25 @@ class LC29HSurveyManager:
                 self._serial_owned = True
             if hasattr(serial_port, "reset_input_buffer"):
                 serial_port.reset_input_buffer()
+            _write_command(
+                serial_port,
+                "$PQTMCFGMSGRATE,W,PQTMSVINSTATUS,1,1")
+            _read_command_ack(
+                serial_port, "PQTMCFGMSGRATE", min(3.0, self._status_timeout),
+                clock=self._clock)
             command = "$PQTMCFGSVIN,W,1,{},{},0.0,0.0,0.0".format(
                 minimum_duration, accuracy_limit)
             _write_command(serial_port, command)
+            _read_command_ack(
+                serial_port, "PQTMCFGSVIN", min(3.0, self._status_timeout),
+                clock=self._clock)
             start_time = self._clock()
             last_valid_status = start_time
             with self._lock:
                 self._state["state"] = "surveying"
 
             while not self._cancel.is_set():
-                response = serial_port.readline().decode(
-                    "ascii", errors="ignore").strip()
+                responses = extract_nmea_sentences(serial_port.readline())
                 now = self._clock()
                 elapsed = max(0, int(now - start_time))
                 with self._lock:
@@ -405,12 +426,9 @@ class LC29HSurveyManager:
                     self._state["remaining"] = max(
                         0, minimum_duration - elapsed)
 
-                if response.startswith("$PQTMCFGSVIN,"):
-                    upper_response = response.upper()
-                    if ",ERROR" in upper_response or ",FAIL" in upper_response:
-                        raise LC29HError(
-                            "Receiver rejected the survey-in command: {}".format(response))
-                elif response.startswith("$PQTMSVINSTATUS,"):
+                for response in responses:
+                    if not response.startswith("$PQTMSVINSTATUS,"):
+                        continue
                     try:
                         parsed = parse_survey_status(response)
                     except SurveyValidationError as error:

@@ -14,6 +14,7 @@ from lc29h_survey import (  # noqa: E402
     SurveyStateError,
     calculate_nmea_checksum,
     ecef_to_geodetic,
+    extract_nmea_sentences,
     format_rtkbase_position,
     parse_survey_status,
 )
@@ -41,6 +42,11 @@ class LC29HProtocolTests(unittest.TestCase):
         parsed = parse_survey_status(status_sentence(2))
         self.assertEqual(parsed["valid_flag"], 2)
         self.assertEqual(parsed["ecef"]["z"], -673507.261)
+
+    def test_extracts_status_with_binary_rtcm_prefix(self):
+        sentence = status_sentence(1)
+        chunk = b"\xd3\x00\x13\x07\x00\x02" + sentence.encode("ascii") + b"\r\n"
+        self.assertEqual(extract_nmea_sentences(chunk), [sentence])
 
     def test_ecef_to_wgs84_geodetic(self):
         latitude, longitude, ellipsoid_height = ecef_to_geodetic(
@@ -88,7 +94,10 @@ class LC29HManagerSafetyTests(unittest.TestCase):
 
             def readline(self):
                 if self.responses:
-                    return (self.responses.pop(0) + "\r\n").encode("ascii")
+                    response = self.responses.pop(0)
+                    if isinstance(response, bytes):
+                        return response
+                    return (response + "\r\n").encode("ascii")
                 return b""
 
             def close(self):
@@ -96,7 +105,14 @@ class LC29HManagerSafetyTests(unittest.TestCase):
 
         writes = []
         response_sets = [
-            [status_sentence(1), status_sentence(2)],
+            [
+                b"\xd3\x00\x01" + calculate_nmea_checksum(
+                    "$PQTMCFGMSGRATE,OK").encode("ascii") + b"\r\n",
+                b"\xd3\x00\x02" + calculate_nmea_checksum(
+                    "$PQTMCFGSVIN,OK").encode("ascii") + b"\r\n",
+                b"\xd3\x00\x03" + status_sentence(1).encode("ascii") + b"\r\n",
+                b"\xd3\x00\x04" + status_sentence(2).encode("ascii") + b"\r\n",
+            ],
             [calculate_nmea_checksum("$PQTMCFGSVIN,OK")],
         ]
 
@@ -109,6 +125,8 @@ class LC29HManagerSafetyTests(unittest.TestCase):
         while manager.get_status()["state"] != "complete" and time.monotonic() < deadline:
             time.sleep(0.001)
         self.assertEqual(manager.get_status()["state"], "complete")
+        self.assertTrue(writes[0].startswith(
+            "$PQTMCFGMSGRATE,W,PQTMSVINSTATUS,1,1"))
 
         status = manager.set_fixed()
         self.assertEqual(status["state"], "fixed")
