@@ -27,9 +27,9 @@ Frontend's main features are:
 Other images are available in the ./images folder.
 
 ## Ready to flash release:
-A ready to flash image is available for Orange Pi Zero, Orange Pi Zero 2, Orange Pi Zero 3 SBC : [Armbian_RTKBase](https://github.com/Stefal/build/releases/latest)
+A ready to flash Armbian image is available for Raspberry Pi, Orange Pi Zero, Orange Pi Zero 2, Orange Pi Zero 3 SBC : [Armbian_RTKBase](https://github.com/Stefal/build/releases/latest)
 
-If you use a Raspberry Pi, thanks to [jancelin](https://github.com/jancelin), you can download a ready to flash iso file [here](https://github.com/jancelin/pi-gen/releases/latest).
+For older Raspberry Pi releases, see [here](https://github.com/jancelin/pi-gen/releases/latest).
 
 ## Easy installation:
 + Connect your gnss receiver to your raspberry pi/orange pi/....
@@ -387,8 +387,8 @@ A gnss receiver with a timepulse output is a very accurate [stratum 0](https://e
 
    ```
 ## Requirements:
-Debian base distro >= 11 (Bullseye)
-Python >= 3.8
+Debian base distro >= 12 (Bookworms)
+Python >= 3.11
 
 ## History:
 See the [changelog](./CHANGELOG.md)
@@ -397,7 +397,7 @@ See the [changelog](./CHANGELOG.md)
 RTKBase is licensed under AGPL 3 (see [LICENSE](./LICENSE) file).
 
 RTKBase uses some parts of other software:
-+ [RTKLIB](https://github.com/tomojitakasu/RTKLIB) (BSD-2-Clause)
++ [RTKLIB-EX](https://github.com/rtklibexplorer/RTKLIB) (BSD-2-Clause)
 + [ReachView](https://github.com/emlid/ReachView) (GPL v3)
 + [Flask](https://palletsprojects.com/p/flask/) [Jinja](https://palletsprojects.com/p/jinja/) [Werkzeug](https://palletsprojects.com/p/werkzeug/) (BSD-3-Clause)
 + [Flask SocketIO](https://github.com/miguelgrinberg/Flask-SocketIO) (MIT)

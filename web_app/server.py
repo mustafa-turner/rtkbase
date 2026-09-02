@@ -98,6 +98,7 @@ bootstrap = Bootstrap4(app)
 
 #Get settings from settings.conf.default and settings.conf
 rtkbaseconfig = RTKBaseConfigManager(os.path.join(rtkbase_path, "settings.conf.default"), os.path.join(rtkbase_path, "settings.conf"))
+app.config["DOWNLOAD_FOLDER"] = rtkbaseconfig.get("local_storage", "datadir").strip("'")
 
 rtk = RTKLIB(socketio,
             rtklib_path=path_to_rtklib,
@@ -222,25 +223,39 @@ def manager():
 
 def repaint_services_button(services_list):
     """
-       set service color on web app frontend depending on the service status:
-       status = running => green button
+        Sets service color on web app frontend depending on the service status:
+        status = running => green button
         status = auto-restart => orange button (alert)
-        result = exit-code => red button (danger)
+        result = exit-code or signal => red button (danger)
     """ 
     for service in services_list:
+        """ 
         if service.get("status") == "running":
             service["btn_color"] = "success"
-        #elif service.get("status") == "dead":
-        #    service["btn_color"] = "danger"
-        elif service.get("result") == "exit-code":
+            service["btn_off_color"] = "outline-secondary"
+        elif service.get("result") == "exit-code" or service.get("result") == "signal":
             service["btn_color"] = "warning"
+            service["btn_off_color"] = "danger"
         elif service.get("status") == "auto-restart":
             service["btn_color"] = "warning"
+
+        if service.get("status") == "failed":
+            service["btn_off_color"] = "danger"
 
         if service.get("state_ok") == False:
             service["btn_off_color"] = "outline-danger"
         elif service.get("state_ok") == True:
+            service["btn_off_color"] = "outline-secondary" 
+        """
+
+        if service.get("status") == "running":
+            service["btn_color"] = "success"
+        elif service.get("status") == "auto-restart":
+            service["btn_color"] = "warning"
+        elif service.get("result") == "success":
             service["btn_off_color"] = "outline-secondary"
+        elif service.get("result") == "exit-code" or service.get("result") == "signal":
+            service["btn_off_color"] = "danger"
 
     return services_list
 
@@ -405,11 +420,12 @@ def download_update(update_path):
         return update_archive
 
 @app.before_request
-def inject_release():
+def inject_global_infos():
     """
-        Insert the RTKBase release number as a global variable for Flask/Jinja
+        Insert various informations as global variables for Flask/Jinja
     """
     g.version = rtkbaseconfig.get("general", "version")
+    g.station_name = rtkbaseconfig.get_ntrip_A_settings()[4]['mnt_name_A']
     g.sbc_model = get_sbc_model()
 
 @login.user_loader
@@ -635,8 +651,8 @@ def diagnostic():
                                  check=False)
         
         #Replace carrier return to <br> for html view
-        sysctl_status = html.escape(sysctl_status.stdout.replace('\n', '<br>'))
-        journalctl = html.escape(journalctl.stdout.replace('\n', '<br>'))
+        sysctl_status = html.escape(sysctl_status.stdout).replace('\n', '<br>')
+        journalctl = html.escape(journalctl.stdout).replace('\n', '<br>')
         active_state = "Active" if service.get('active') == True else "Inactive"
         logs.append({'name' : service['service_unit'], 'active' : active_state, 'sysctl_status' : sysctl_status, 'journalctl' : journalctl})
         
@@ -742,11 +758,16 @@ def detect_receiver(json_msg):
     #print("DEBUG json_msg: ", json_msg)
     answer = subprocess.run([os.path.join(rtkbase_path, "tools", "install.sh"), "--user", rtkbaseconfig.get("general", "user"), "--detect-gnss", "--no-write-port"], encoding="UTF-8", stderr=subprocess.PIPE, stdout=subprocess.PIPE, check=False)
     if answer.returncode == 0 and "/dev/" in answer.stdout:
-        #print("DEBUG ok stdout: ", answer.stdout)
+        print(answer.stdout)
         try:
             device_info = next(x for x in answer.stdout.splitlines() if x.startswith('/dev/')).split(' - ')
-            port, gnss_type, speed, firmware = [x.strip() for x in device_info]
-            result = {"result" : "success", "port" : port, "gnss_type" : gnss_type, "port_speed" : speed, "firmware" : firmware}
+            port, gnss_type, speed, firmware, model = [x.strip() for x in device_info]
+            result = {"result" : "success",
+                      "port" : port,
+                      "gnss_type" : gnss_type,
+                      "port_speed" : speed,
+                      "firmware" : firmware,
+                      "model" : model}
             result.update(json_msg)
         except Exception:
             result = {"result" : "failed"}
@@ -764,7 +785,7 @@ def apply_receiver_settings(json_msg):
     print(json_msg)
     rtkbaseconfig.update_setting("main", "com_port", json_msg.get("port").strip("/dev/"), write_file=False)
     rtkbaseconfig.update_setting("main", "com_port_settings", json_msg.get("port_speed") + ':8:n:1', write_file=False)
-    rtkbaseconfig.update_setting("main", "receiver", json_msg.get("gnss_type"), write_file=False)
+    rtkbaseconfig.update_setting("main", "receiver", json_msg.get("gnss_type") + '_' + json_msg.get("model"), write_file=False)
     rtkbaseconfig.update_setting("main", "receiver_firmware", json_msg.get("firmware"), write_file=True)
 
     socketio.emit("gnss_settings_saved", json.dumps(json_msg), namespace="/test")
@@ -784,7 +805,7 @@ def configure_receiver(brand="", model=""):
 
     print("configuring {} gnss receiver model {}".format(brand, model))
     answer = subprocess.run([os.path.join(rtkbase_path, "tools", "install.sh"), "--user", rtkbaseconfig.get("general", "user"), "--configure-gnss"], encoding="UTF-8", stderr=subprocess.PIPE, stdout=subprocess.PIPE, check=False)
-    #print("DEBUG - stdout: ", answer.stdout)
+    print(answer.stdout)
     #print("DEBUG - returncode: ", answer.returncode)
 
     if answer.returncode == 0: # and "Done" in answer.stdout:
@@ -1051,7 +1072,6 @@ def getServicesStatus(emit_pingback=True):
         services_status.append({key:service[key] for key in service if key != 'unit'})
 
     services_status = repaint_services_button(services_status)
-    #print(services_status)
     if emit_pingback:
         socketio.emit("services status", json.dumps(services_status), namespace="/test")
     return services_status
@@ -1084,6 +1104,11 @@ def switchService(json_msg):
             elif json_msg["name"] == service["name"] and json_msg["active"] == False:
                 print("Trying to stop service {}".format(service["name"]))
                 service["unit"].stop()
+
+        # When the service is in failed state and we try to restart the service from the web UI during
+        # the StartLimitIntervalSec, the service status doesn't change (stay failed off), but the button switch to on
+        # I think I need to find another way to manage this case
+        #getServicesStatus(emit_pingback = True)
 
     except Exception as e:
         print(e)
@@ -1170,8 +1195,6 @@ if __name__ == "__main__":
         #check if authentification is required
         if not rtkbaseconfig.get_web_authentification():
             app.config["LOGIN_DISABLED"] = True
-        #get data path
-        app.config["DOWNLOAD_FOLDER"] = rtkbaseconfig.get("local_storage", "datadir").strip("'")
         #load services status managed with systemd
         services_list = load_units(services_list)
         #Update standard user in settings.conf

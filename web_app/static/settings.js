@@ -346,7 +346,9 @@ $(document).ready(function () {
         console.log(response);
         detectApplyBtnElt.setAttribute('data-dismiss', 'modal');
         if (response['result'] === 'success') {
-            const receiverName = response['gnss_type'] === 'Quectel_LC29HBS' ? 'Quectel LC29H-BS' : response['gnss_type'];
+            const receiverName = response['gnss_type'] === 'Quectel' && response['model'] === 'LC29HBS'
+                ? 'Quectel LC29H-BS'
+                : [response['gnss_type'], response['model']].filter(Boolean).join(' ');
             detectBodyElt.innerHTML = '<b>' + receiverName + '</b>' + ' detected on ' + '<b>' + response['port'] + '</b>' + '<br>' + '<br>' + 'Do you want to apply?';
             detectApplyBtnElt.onclick = function (){
                 socket.emit("apply_receiver_settings", response)
@@ -412,7 +414,7 @@ $(document).ready(function () {
         detectApplyBtnElt.removeAttribute('data-dismiss');
         detectApplyBtnElt.onclick = function (){}; //remove the previous attached event
         $('#detectModal').modal();
-        socket.emit("detect_receiver" ,{"then_configure" : true});
+        socket.emit("detect_receiver", {"then_configure" : true});
     });
 
     // ####################### HANDLE UPDATE #######################
@@ -621,6 +623,9 @@ $(document).ready(function () {
         }
         if (interface.ipv6) {
             html += `<li>IPv6: ${interface.ipv6.join(' - ')}</li>`;
+        }
+        if (interface.hwaddr) {
+            html += `<li>MAC: ${interface.hwaddr}</li>`;
         }
         html += '</ul></dd>';
         });
