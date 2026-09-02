@@ -1049,6 +1049,14 @@ def getServicesStatus(emit_pingback=True):
         :return The gathered services status list
     """
 
+    # Refresh all units in one call. Besides reducing overhead on a Pi Zero,
+    # this avoids sharing pystemd D-Bus state with gevent/Gunicorn workers.
+    try:
+        ServiceController.refresh_all(
+            service["unit"] for service in services_list)
+    except Exception as error:
+        print("Error refreshing systemd service info: {}".format(error))
+
     #print("Getting services status")
     for service in services_list:
         try:

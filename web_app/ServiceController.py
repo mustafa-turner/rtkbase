@@ -1,33 +1,117 @@
-import os
+import subprocess
 import time
-from pystemd.systemd1 import Unit
-from pystemd.systemd1 import Manager
+
+
+class ServiceControllerError(RuntimeError):
+    """Raised when systemctl cannot complete a service operation."""
+
 
 class ServiceController(object):
-    """
-        A simple wrapper around pystemd to manage systemd services
-    """
-    
-    manager = Manager(_autoload=True)
+    """Read and control systemd units through synchronous systemctl calls."""
+
+    STATE_PROPERTIES = (
+        "Id", "ActiveState", "SubState", "Result", "User", "NRestarts")
+    CACHE_SECONDS = 1.5
 
     def __init__(self, unit):
         """
             param: unit: a systemd unit name (ie str2str_tcp.service...)
         """
-        self.unit = Unit(bytes(unit, 'utf-8'), _autoload=True)
-        
+        self.unit_name = unit
+        self._state = {}
+        self._state_time = 0.0
+
+    @staticmethod
+    def _raise_for_result(command, result):
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise ServiceControllerError(
+                "{} failed{}".format(
+                    " ".join(command), ": " + detail if detail else ""))
+
+    @staticmethod
+    def _parse_show_output(output):
+        records = []
+        for block in output.strip().split("\n\n"):
+            record = {}
+            for line in block.splitlines():
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    record[key] = value
+            if record:
+                records.append(record)
+        return records
+
+    @classmethod
+    def _show_arguments(cls):
+        return ["--property={}".format(name)
+                for name in cls.STATE_PROPERTIES]
+
+    def _run_systemctl(self, *arguments, **kwargs):
+        """Run one synchronous systemctl operation without a shell."""
+        check = kwargs.pop("check", True)
+        if kwargs:
+            raise TypeError("Unexpected keyword arguments: {}".format(
+                ", ".join(kwargs)))
+        command = ["systemctl"] + list(arguments) + [self.unit_name]
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, check=False)
+        if check:
+            self._raise_for_result(command, result)
+        return result
+
+    def refresh(self, force=False):
+        """Refresh this unit's cached properties."""
+        now = time.monotonic()
+        if (not force and self._state and
+                now - self._state_time < self.CACHE_SECONDS):
+            return
+        result = self._run_systemctl(
+            "show", *self._show_arguments(), "--no-pager")
+        records = self._parse_show_output(result.stdout)
+        if not records:
+            raise ServiceControllerError(
+                "systemctl returned no state for {}".format(self.unit_name))
+        self._state = records[0]
+        self._state_time = now
+
+    @classmethod
+    def refresh_all(cls, controllers):
+        """Refresh several controllers with one systemctl process."""
+        controllers = list(controllers)
+        if not controllers:
+            return
+        command = (["systemctl", "show"] + cls._show_arguments() +
+                   ["--no-pager"] +
+                   [controller.unit_name for controller in controllers])
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, check=False)
+        cls._raise_for_result(command, result)
+        states = {record.get("Id"): record
+                  for record in cls._parse_show_output(result.stdout)}
+        now = time.monotonic()
+        for controller in controllers:
+            state = states.get(controller.unit_name)
+            if state is not None:
+                controller._state = state
+                controller._state_time = now
+
+    def _property(self, name):
+        self.refresh()
+        return self._state.get(name, "")
+
+    def _invalidate(self):
+        self._state = {}
+        self._state_time = 0.0
+
     def isActive(self):
-        if self.unit.Unit.ActiveState == b'active':
-            return True
-        elif self.unit.Unit.ActiveState == b'activating':
-            #TODO manage this transitionnal state differently
-            return True
-        else:
-            return False
+        return self.active_state() in ("active", "activating")
 
     def active_state(self):
         """Return systemd's current ActiveState as text."""
-        return self.unit.Unit.ActiveState.decode()
+        return self._property("ActiveState")
 
     def wait_for_inactive(self, timeout=10.0, interval=0.1):
         """Wait for a stop job to finish, rather than only being queued."""
@@ -37,58 +121,38 @@ class ServiceController(object):
                 return True
             time.sleep(interval)
         return self.active_state() in ("inactive", "failed")
-    
+
     def get_nrestart(self):
-        """
-            Get the number of restarts since the last service startup
-        """
-        return self.unit.Service.NRestarts
+        """Get the number of restarts since the last service startup."""
+        return int(self._property("NRestarts") or 0)
 
     def get_result(self):
-        """
-            Get the unit return status.
-            success => it's ok
-            exit-code => str2str doesn't start successfully
-            We can read a success between the startup and the first error
-        """
-        if "org.freedesktop.systemd1.Service" in self.unit._interfaces:
-            return self.unit.Service.Result.decode()
-        elif "org.freedesktop.systemd1.Timer" in self.unit._interfaces:
-            return self.unit.Timer.Result.decode()
+        """Get the unit return status."""
+        return self._property("Result")
 
     def getUser(self):
-        return self.unit.Service.User.decode()
-    
+        return self._property("User")
+
     def status(self):
-        """
-            get the unit status:
-            auto-restart: the service will restart later
-            start: the service is starting
-            running; the service is running
-        """
-        return (self.unit.Unit.SubState).decode()
+        """Get the unit SubState (running, dead, auto-restart, etc.)."""
+        return self._property("SubState")
 
     def start(self):
-        """
-            Start the unit.
-            It will reset the failed counter before starting the unit.
-        """
-        try:
-            self.manager.Manager.ResetFailedUnit(self.unit.Unit.Names[0])
-        except:
-            pass
-        self.manager.Manager.EnableUnitFiles(self.unit.Unit.Names, False, True)
-        return self.unit.Unit.Start(b'replace')
-        
+        """Reset failures, enable the unit and start it."""
+        self._run_systemctl("reset-failed", check=False)
+        self._run_systemctl("enable")
+        result = self._run_systemctl("start")
+        self._invalidate()
+        return result
+
     def stop(self):
-        """
-            Stop the unit.
-        """
-        self.manager.Manager.DisableUnitFiles(self.unit.Unit.Names, False)
-        return self.unit.Unit.Stop(b'replace')
-        
+        """Stop and disable the unit."""
+        result = self._run_systemctl("disable", "--now")
+        self._invalidate()
+        return result
+
     def restart(self):
-        """
-            Restart the unit.
-        """
-        return self.unit.Unit.Restart(b'replace')
+        """Restart the unit."""
+        result = self._run_systemctl("restart")
+        self._invalidate()
+        return result
